@@ -4,23 +4,40 @@ import android.accessibilityservice.AccessibilityService
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
-import android.util.Log
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.LinearLayout.LayoutParams
 
 class NavbarAccessibilityService : AccessibilityService() {
 
     private var windowManager: WindowManager? = null
-    private var navbarView: LinearLayout? = null
+    private var navbarView: View? = null
+    private var gestureStrip: View? = null
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val AUTO_HIDE_DELAY = 2000L
+    private var isVisible = true
+
+    private val hideRunnable = Runnable { hideNavbar() }
+
+    // untuk deteksi swipe
+    private var startY = 0f
+    private val SWIPE_THRESHOLD = 80f
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.d("MKA_NAVBAR", "onServiceConnected → mencoba menampilkan navbar")
-        showNavbar()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            Settings.canDrawOverlays(this)
+        ) {
+            showNavbar()
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -31,50 +48,178 @@ class NavbarAccessibilityService : AccessibilityService() {
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
-        val navbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#CC000000"))
-            setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8))
+        // =========================
+        // NAVBAR UTAMA
+        // =========================
+        val navbar = LinearLayout(this)
+        navbar.orientation = LinearLayout.HORIZONTAL
+        navbar.setBackgroundColor(Color.TRANSPARENT)
+        navbar.setPadding(8, 4, 8, 4)
+
+        // TOMBOL RECENT
+        val recentButton = Button(this)
+        recentButton.text = "□"
+        recentButton.textSize = 20f
+        recentButton.setTextColor(Color.WHITE)
+        recentButton.setBackgroundColor(Color.TRANSPARENT)
+        recentButton.minimumWidth = 0
+        recentButton.minimumHeight = 0
+        recentButton.contentDescription = "Recent Apps"
+        recentButton.setOnClickListener {
+            resetHideTimer()
+            goRecent()
         }
 
-        val backBtn = createButton("<") { performGlobalAction(GLOBAL_ACTION_BACK) }
-        val homeBtn = createButton("○") { performGlobalAction(GLOBAL_ACTION_HOME) }
-        val recentBtn = createButton("□") { performGlobalAction(GLOBAL_ACTION_RECENTS) }
+        // TOMBOL HOME
+        val homeButton = Button(this)
+        homeButton.text = "○"
+        homeButton.textSize = 20f
+        homeButton.setTextColor(Color.WHITE)
+        homeButton.setBackgroundColor(Color.TRANSPARENT)
+        homeButton.minimumWidth = 0
+        homeButton.minimumHeight = 0
+        homeButton.contentDescription = "Home"
+        homeButton.setOnClickListener {
+            resetHideTimer()
+            goHome()
+        }
 
-        val params = LayoutParams(0, LayoutParams.MATCH_PARENT, 1f)
-        navbar.addView(backBtn, params)
-        navbar.addView(homeBtn, params)
-        navbar.addView(recentBtn, params)
+        // TOMBOL BACK
+        val backButton = Button(this)
+        backButton.text = "<"
+        backButton.textSize = 20f
+        backButton.setTextColor(Color.WHITE)
+        backButton.setBackgroundColor(Color.TRANSPARENT)
+        backButton.minimumWidth = 0
+        backButton.minimumHeight = 0
+        backButton.background = null
+        backButton.contentDescription = "Back"
+        backButton.setOnClickListener {
+            resetHideTimer()
+            goBack()
+        }
 
-        // ===== INI YANG PENTING =====
-        val layoutParams = WindowManager.LayoutParams(
+        val buttonParams = LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            1f
+        )
+
+        navbar.addView(recentButton, buttonParams)
+        navbar.addView(homeButton, buttonParams)
+        navbar.addView(backButton, buttonParams)
+
+        // =========================
+        // STRIP DETEKSI SWIPE (selalu ada)
+        // =========================
+        val strip = View(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        startY = event.rawY
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val deltaY = startY - event.rawY
+                        if (deltaY > SWIPE_THRESHOLD) {
+                            showNavbarFull()
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+
+        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        // Parameter navbar
+        val navbarParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            dpToPx(52),
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,   // ← wajib pakai ini
+            dpToPx(40),
+            windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
         }
 
+        // Parameter strip (tinggi kecil di paling bawah)
+        val stripParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            dpToPx(16),
+            windowType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        }
+
+        navbarView = navbar
+        gestureStrip = strip
+
         try {
-            windowManager?.addView(navbar, layoutParams)
-            navbarView = navbar
-            Log.d("MKA_NAVBAR", "Navbar berhasil ditambahkan")
+            windowManager?.addView(strip, stripParams)
+            windowManager?.addView(navbar, navbarParams)
+            isVisible = true
+            startHideTimer()
         } catch (e: Exception) {
-            Log.e("MKA_NAVBAR", "Gagal menambahkan navbar", e)
+            navbarView = null
+            gestureStrip = null
         }
     }
 
-    private fun createButton(text: String, onClick: () -> Unit): Button {
-        return Button(this).apply {
-            this.text = text
-            textSize = 22f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener { onClick() }
+    private fun showNavbarFull() {
+        if (isVisible) {
+            resetHideTimer()
+            return
+        }
+
+        navbarView?.let { view ->
+            view.visibility = View.VISIBLE
+            view.translationY = view.height.toFloat()
+            view.animate()
+                .translationY(0f)
+                .setDuration(200)
+                .withEndAction {
+                    isVisible = true
+                    startHideTimer()
+                }
+                .start()
+        }
+    }
+
+    private fun hideNavbar() {
+        if (!isVisible) return
+
+        navbarView?.let { view ->
+            view.animate()
+                .translationY(view.height.toFloat())
+                .setDuration(200)
+                .withEndAction {
+                    view.visibility = View.GONE
+                    isVisible = false
+                }
+                .start()
+        }
+    }
+
+    private fun startHideTimer() {
+        handler.removeCallbacks(hideRunnable)
+        handler.postDelayed(hideRunnable, AUTO_HIDE_DELAY)
+    }
+
+    private fun resetHideTimer() {
+        if (isVisible) {
+            startHideTimer()
         }
     }
 
@@ -82,12 +227,27 @@ class NavbarAccessibilityService : AccessibilityService() {
         return (dp * resources.displayMetrics.density).toInt()
     }
 
+    fun goBack() {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    fun goHome() {
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    fun goRecent() {
+        performGlobalAction(GLOBAL_ACTION_RECENTS)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacks(hideRunnable)
         try {
             navbarView?.let { windowManager?.removeView(it) }
+            gestureStrip?.let { windowManager?.removeView(it) }
         } catch (_: Exception) {}
         navbarView = null
+        gestureStrip = null
         windowManager = null
     }
 }
